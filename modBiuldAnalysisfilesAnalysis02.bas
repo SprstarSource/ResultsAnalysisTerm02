@@ -1,4 +1,4 @@
-Attribute VB_Name = "modBiuldAnalysisfilesAnalysis02"
+Attribute VB_Name = "modAnalysisWorkbookBuilderAnalysis02"
 Option Explicit
 
 '==============================================================================
