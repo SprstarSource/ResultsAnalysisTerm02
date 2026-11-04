@@ -103,9 +103,10 @@ Enable macros if Excel shows a security warning and the workbook is trusted.
 ---
 Design notes
 Fresh output on every run. Workbooks are generated programmatically, without templates or reuse of earlier output files, so nothing stale or corrupted carries over.
-Fast in-memory processing. Raw data is loaded into `Variant` arrays and joined with `Scripting.Dictionary` lookups instead of cell-by-cell worksheet access.
-Self-contained modules, by choice. Some modules embed their own copy of the collection engine so that an operation does not depend on another module being present. The trade-off is duplicated logic that must be kept consistent when its rules change. For the full rationale see `ARCHITECTURE.txt`.
-Dynamic discovery in generated workbooks. The analysis modules read subjects from the headers of the `Data` table rather than from hard-coded positions.
+Fast in-memory processing. Source data is read into `Variant` arrays in one pass and written back to the sheets in one bulk assignment, instead of cell-by-cell worksheet access.
+Fixed schema for ministry exports, validated. `modTransfer02` reads the Digitalization Platform exports through fixed column maps and checks the header text at each mapped position before writing anything; a mismatch stops the run with a list of the offending cells.
+Dynamic discovery in generated workbooks. The analysis modules read subjects and term averages from the headers of the `Data` table rather than from hard-coded positions.
+Shared code where it pays, self-contained where it matters. The six analysis-generation modules share `modAnalysisWorkbookBuilderCommon02` (all its public names carry the `baf_` prefix). `modTransfer02` and `modOrientationAll02` carry their own helpers (including an embedded copy of the collection engine in `modTransfer02`), so the orientation stages do not depend on the analysis-generation code. The trade-off is duplicated logic that must be kept consistent. See `ARCHITECTURE.md` for the decisions and their trade-offs.
 Interruption and error handling. The orientation workflow validates its inputs, reports consolidated results and handles `Esc` / `Ctrl + Break`; Excel settings are restored and the internal busy state reset after an interruption or failure.
 ---
 Requirements and compatibility
