@@ -10,14 +10,14 @@ Private Const BUTTON_HEIGHT As Double = 54
 Private Const BUTTON_GAP As Double = 12
 
 Private Function PanelActions() As Variant
-    ' Second Term Analysis and Split Term Results work on the raw files of Source02: no previous step is required.
+    ' Second Term Analysis, Cumulative Term Average and Split Term Results work on the raw files of Source02: no previous step is required.
     PanelActions = Array( _
         Array("btnCollect", "Second Term Results", "CollectTerm02Results", False, &H60AE27), _
         Array("btnDistribute", "Second Term Analysis", "modBiuldAnalysisfilesBuildAll02.Build_All", False, &HB98029), _
-        Array("btnAverage", "Cumulative Term Average", "CumulativeTermAverage", True, &HAD448E), _
+        Array("btnAverage", "Cumulative Term Average", "CumulativeTermAverage", False, &HAD448E), _
         Array("btnSplitTerms", "Split Term Results", "modSplitTermResults.SplitTermResults", False, &H85A016), _
         Array("btnExamen", "Examen Analysis", "modExamenAnalysis02.Run_ExamenAnalysis02", False, &HA05568), _
-        Array("btnCompaire", "Compaire", "modCompaire.Run_Compaire", False, &H00B0E8F0), _
+        Array("btnCompare", "Compare", "modCompare.Run_Compare", False, &H00B0E8F0), _
         Array("btnOrientationAll", "Term 02 Orientation", "modOrientationAll02.Run_OrientationAll02", False, &HB98029))
 End Function
 
@@ -196,13 +196,23 @@ Private Function PanelResultsExist() As Boolean
     Dim attrs As Long, p As String
     If Len(ThisWorkbook.Path) = 0 Then Exit Function
     If LCase$(Left$(ThisWorkbook.Path, 4)) = "http" Then Exit Function
-    p = ThisWorkbook.Path & Application.PathSeparator & RESULTS_FILE
+    p = ThisWorkbook.Path & Application.PathSeparator & PanelOutputFolderName() & Application.PathSeparator & RESULTS_FILE
     On Error GoTo Missing
     attrs = GetAttr(p)
     PanelResultsExist = ((attrs And vbDirectory) = 0)
     Exit Function
 Missing:
     PanelResultsExist = False
+End Function
+
+' Output folder that holds Term02Results.xlsx (hex code points, same name as in modCollector)
+Private Function PanelOutputFolderName() As String
+    Dim parts() As String, i As Long, s As String
+    parts = Split("0645 0639 0627 0644 062C 0629 0020 0628 064A 0627 0646 0627 062A 0020 0627 0644 0641 0635 0644 0020 0030 0032", " ")
+    For i = LBound(parts) To UBound(parts)
+        If Len(parts(i)) > 0 Then s = s & ChrW(CLng("&H" & parts(i)))
+    Next i
+    PanelOutputFolderName = s
 End Function
 
 Private Function PanelMacroAction(ByVal macroName As String) As String
