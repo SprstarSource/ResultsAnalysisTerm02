@@ -11,7 +11,8 @@ Option Explicit
 '      - analysis cells are fixed values (no formulas) except the live cells of Gen:
 '        the "difference" column of section 3 and two hidden helper columns (H:I)
 '        of section 4, which drive the conditional formatting (manual input)
-'   4) saves it next to this workbook:  <Arabic name> .xlsx / _01 / _02 ...
+'   4) saves it in the output folder next to this workbook (created when missing):
+'      <Arabic name> .xlsx / _01 / _02 ...
 ' Subject recognition: exact keywords first; if none matches, a one-wrong-letter
 '   fallback (unique subject only) - every such guess is written in the transfer sheet.
 ' All Arabic text is stored as hex code points (ArHex) so this file is pure ASCII.
@@ -106,7 +107,7 @@ Private mLoaded(1 To 6, 1 To 12) As Boolean
 '  Entry point
 '==============================================================================
 Public Sub Run_ExamenAnalysis02()
-    Dim baseFolder As String, sourceFolder As String, outputPath As String
+    Dim baseFolder As String, sourceFolder As String, outDir As String, outputPath As String
     Dim dictSummary As Object
     Dim oldScreen As Boolean, oldEvents As Boolean, oldAlerts As Boolean, oldStatus As Variant
     Dim stateSaved As Boolean, Failed As Boolean, savedOK As Boolean
@@ -140,7 +141,9 @@ Public Sub Run_ExamenAnalysis02()
     Application.StatusBar = Ar("working") & " ..."
     BuildOutputWorkbook dictSummary
 
-    outputPath = NewOutputPath(baseFolder, Ar("out_name"))
+    outDir = baseFolder & Application.PathSeparator & OutputFolderName()
+    If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 904, "modExamenAnalysis02", "The output folder could not be created: " & outDir
+    outputPath = NewOutputPath(outDir, Ar("out_name"))
     g_wbOut.CheckCompatibility = False
     g_wbOut.SaveAs fileName:=outputPath, FileFormat:=xlOpenXMLWorkbook, CreateBackup:=False
     savedOK = True
@@ -1746,6 +1749,24 @@ Private Function NewOutputPath(ByVal folder As String, ByVal stem As String) As 
         fullPath = folder & Application.PathSeparator & stem & "_" & Format$(n, "00") & ".xlsx"
     Loop
     NewOutputPath = fullPath
+End Function
+
+'==============================================================================
+'  Output folder (created next to the tool workbook when missing)
+'==============================================================================
+Private Function OutputFolderName() As String
+    OutputFolderName = ArHex("0645 0639 0627 0644 062C 0629 0020 0628 064A 0627 0646 0627 062A 0020 0627 0644 0641 0635 0644 0020 0030 0032")
+End Function
+
+Private Function EnsureFolder(ByVal p As String) As Boolean
+    If Right$(p, 1) = Application.PathSeparator Then p = Left$(p, Len(p) - 1)
+    If Not FolderExists(p) Then
+        On Error Resume Next
+        MkDir p
+        Err.Clear
+        On Error GoTo 0
+    End If
+    EnsureFolder = FolderExists(p)
 End Function
 
 '==============================================================================
