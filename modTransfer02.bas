@@ -7,6 +7,8 @@ Private m_silent As Boolean
 
 ' ============================================================
 ' Transfer 02: \Source02\ -> Term02Guidance.xlsx (Data science; Data01 arts)
+' Target file: inside the output folder next to the tool workbook (created when missing).
+' If the file is only found beside the tool (old location) it is copied into the folder first.
 ' ============================================================
 
 Private Const SRC_FOLDER As String = "Source02"
@@ -105,7 +107,7 @@ Public Sub Run_Transfer02()
         Err.Raise vbObjectError + 4, , "No usable source file was found in " & SRC_FOLDER & "." & vbLf & srcList
     End If
     srcOpened = True
-    Set wbDst = OpenWb(DST_FILE, False, dstOpened)
+    Set wbDst = OpenWb(ResolveDstPath(), False, dstOpened)
     If wbDst.ReadOnly Then Err.Raise vbObjectError + 2, , DST_FILE & " is open read-only."
     Set problems = CreateObject("Scripting.Dictionary")
     PrepareTransfer wbSrc, wbDst, False, science, problems
@@ -399,13 +401,56 @@ Private Function Rnd2(ByVal x As Double) As Double
     Rnd2 = Application.WorksheetFunction.Round(x, 2)
 End Function
 
-Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
-    Dim wb As Workbook, fullPath As String
-    opened = False
-    If Len(ThisWorkbook.Path) = 0 Then
-        Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
+' ==============================================================================
+' OUTPUT FOLDER + TARGET FILE PATH
+' ==============================================================================
+' Name of the output folder next to the tool workbook (hex code points)
+Private Function OutputFolderName() As String
+    OutputFolderName = Txt("645 639 627 644 62C 629 20 628 64A 627 646 627 62A 20 627 644 641 635 644 20 30 32")
+End Function
+
+Private Function FolderExistsPath(ByVal p As String) As Boolean
+    On Error Resume Next
+    FolderExistsPath = ((GetAttr(p) And vbDirectory) <> 0)
+    If Err.Number <> 0 Then FolderExistsPath = False: Err.Clear
+End Function
+
+Private Function EnsureFolder(ByVal p As String) As Boolean
+    If Right$(p, 1) = "\" Then p = Left$(p, Len(p) - 1)
+    If Not FolderExistsPath(p) Then
+        On Error Resume Next
+        MkDir p
+        Err.Clear
+        On Error GoTo 0
     End If
-    fullPath = ThisWorkbook.Path & Application.PathSeparator & fileName
+    EnsureFolder = FolderExistsPath(p)
+End Function
+
+' Full path of Term02Guidance.xlsx inside the output folder (folder created when missing).
+' A copy found beside the tool (old location) is copied into the folder; the original is untouched.
+Private Function ResolveDstPath() As String
+    Dim outDir As String, dstPath As String, oldPath As String, copyErr As Long
+    If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
+    outDir = ThisWorkbook.Path & Application.PathSeparator & OutputFolderName()
+    If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 5, , "The output folder could not be created: " & outDir
+    dstPath = outDir & Application.PathSeparator & DST_FILE
+    If Not FileExistsPath(dstPath) Then
+        oldPath = ThisWorkbook.Path & Application.PathSeparator & DST_FILE
+        If Not FileExistsPath(oldPath) Then Err.Raise vbObjectError + 1, , "File not found: " & dstPath
+        On Error Resume Next
+        FileCopy oldPath, dstPath
+        copyErr = Err.Number
+        Err.Clear
+        On Error GoTo 0
+        If copyErr <> 0 Then Err.Raise vbObjectError + 6, , "Could not copy " & oldPath & " into the output folder (close it in Excel and retry)."
+    End If
+    ResolveDstPath = dstPath
+End Function
+
+Private Function OpenWb(ByVal fullPath As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
+    Dim wb As Workbook, fileName As String
+    opened = False
+    fileName = Mid$(fullPath, InStrRev(fullPath, Application.PathSeparator) + 1)
     For Each wb In Application.Workbooks
         If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
             Set OpenWb = wb
@@ -415,7 +460,7 @@ Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, B
             Err.Raise vbObjectError + 1, , "A different file with the same name is open: " & wb.FullName
         End If
     Next wb
-    If Dir(fullPath) = "" Then Err.Raise vbObjectError + 1, , "File not found: " & fullPath
+    If Not FileExistsPath(fullPath) Then Err.Raise vbObjectError + 1, , "File not found: " & fullPath
     Set OpenWb = Workbooks.Open(Filename:=fullPath, UpdateLinks:=0, ReadOnly:=asReadOnly)
     opened = True
 End Function
