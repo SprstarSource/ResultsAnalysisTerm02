@@ -391,7 +391,7 @@ End Function
 ' ==============================================================================
 ' Name of the output folder created next to the tool workbook (hex code points)
 Private Function OutputFolderName() As String
-    OutputFolderName = AR("062A 062D 0644 064A 0644 0020 0646 062A 0627 0626 062C 0020 0627 0644 0641 0635 0644 0020 0627 0644 062B 0627 0646 064A")
+    OutputFolderName = AR("0645 0639 0627 0644 062C 0629 0020 0628 064A 0627 0646 0627 062A 0020 0627 0644 0641 0635 0644 0020 0030 0032")
 End Function
 
 ' stem.xlsx, then stem_01.xlsx, stem_02.xlsx ... (folder must end with a backslash)
