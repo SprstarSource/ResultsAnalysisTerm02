@@ -8,7 +8,8 @@ Option Explicit
 '           converted, moved, renamed or saved inside \Source02\.
 '           BuildSourceWorkbook()  -> collected workbook, in memory (open, unsaved).
 '                                     Used by ResultFlow02 and modTransfer02.
-'           CollectTerm02Results() -> same workbook saved as Term02Results.xlsx.
+'           CollectTerm02Results() -> same workbook saved as Term02Results.xlsx inside the
+'                                     output folder next to the tool (created when missing).
 ' Entry   : CollectTerm02Results()
 '==============================================================================
 
@@ -412,12 +413,42 @@ EH:
 End Function
 
 ' ==============================================================================
+' OUTPUT FOLDER (created next to the tool workbook when missing)
+' ==============================================================================
+' Name of the output folder (hex code points)
+Private Function OutputFolderName() As String
+    Dim parts() As String, i As Long, s As String
+    parts = Split("0645 0639 0627 0644 062C 0629 0020 0628 064A 0627 0646 0627 062A 0020 0627 0644 0641 0635 0644 0020 0030 0032", " ")
+    For i = LBound(parts) To UBound(parts)
+        If Len(parts(i)) > 0 Then s = s & ChrW(CLng("&H" & parts(i)))
+    Next i
+    OutputFolderName = s
+End Function
+
+Private Function FolderExistsPath(ByVal p As String) As Boolean
+    On Error Resume Next
+    FolderExistsPath = ((GetAttr(p) And vbDirectory) <> 0)
+    If Err.Number <> 0 Then FolderExistsPath = False: Err.Clear
+End Function
+
+Private Function EnsureFolder(ByVal p As String) As Boolean
+    If Right$(p, 1) = "\" Then p = Left$(p, Len(p) - 1)
+    If Not FolderExistsPath(p) Then
+        On Error Resume Next
+        MkDir p
+        Err.Clear
+        On Error GoTo 0
+    End If
+    EnsureFolder = FolderExistsPath(p)
+End Function
+
+' ==============================================================================
 ' MAIN ENTRY POINT (Collect button): saves the collected workbook as Term02Results.xlsx
 ' ==============================================================================
 Public Sub CollectTerm02Results()
     Dim wbResult As Workbook
     Dim copied As Long, skipped As Long, skippedList As String, report As String
-    Dim srcPath As String, outPath As String, failMsg As String
+    Dim srcPath As String, outDir As String, outPath As String, failMsg As String
     Dim oldCalc As Long, saved As Boolean
 
     If ThisWorkbook.Path = "" Then
@@ -430,7 +461,8 @@ Public Sub CollectTerm02Results()
     End If
 
     srcPath = ThisWorkbook.Path & "\" & SOURCE_FOLDER_NAME & "\"
-    outPath = ThisWorkbook.Path & "\Term02Results.xlsx"
+    outDir = ThisWorkbook.Path & "\" & OutputFolderName()
+    outPath = outDir & "\Term02Results.xlsx"
 
     If Dir(srcPath, vbDirectory) = "" Then
         MsgBox SOURCE_FOLDER_NAME & " folder not found:" & vbCrLf & srcPath, vbExclamation, "Error": Exit Sub
@@ -444,6 +476,7 @@ Public Sub CollectTerm02Results()
     On Error GoTo Fail
 
     If BuildSourceWorkbook(srcPath, wbResult, copied, skipped, skippedList) Then
+        If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 910, , "The output folder could not be created: " & outDir
         wbResult.SaveAs fileName:=outPath, FileFormat:=xlOpenXMLWorkbook
         saved = True
     End If
@@ -466,7 +499,7 @@ CleanExit:
              "--- Data Collection (directly from " & SOURCE_FOLDER_NAME & ") ---" & vbCrLf & _
              "Copied files : " & copied & vbCrLf & "Skipped files: " & skipped & vbCrLf & vbCrLf
     If saved Then
-        report = report & "Output: Term02Results.xlsx"
+        report = report & "Output: " & outPath
     Else
         report = report & "No usable source file was found - nothing was saved."
     End If
