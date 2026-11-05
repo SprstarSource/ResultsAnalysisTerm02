@@ -1,4 +1,4 @@
-Attribute VB_Name = "modCompaire"
+Attribute VB_Name = "modCompare"
 Option Explicit
 
 ' \Source02\ (raw files, collected in memory by the embedded engine - no Term02Results.xlsx)
@@ -54,7 +54,7 @@ Private Type CompareBatch
     Counts(1 To 3) As Long
 End Type
 
-Public Sub Run_Compaire()
+Public Sub Run_Compare()
     Dim source As Workbook, target As Workbook, ws As Worksheet
     Dim openedSource As Boolean, savedTarget As Boolean, failed As Boolean
     Dim oldScreen As Boolean, oldEvents As Boolean, oldAlerts As Boolean
@@ -77,14 +77,14 @@ Public Sub Run_Compaire()
     Application.DisplayAlerts = False
 
     folder = ThisWorkbook.Path
-    If Len(folder) = 0 Then Err.Raise vbObjectError + 901, "modCompaire", Text("save_tool")
-    If LCase$(Left$(folder, 4)) = "http" Then Err.Raise vbObjectError + 906, "modCompaire", "Use a local or locally synced folder."
+    If Len(folder) = 0 Then Err.Raise vbObjectError + 901, "modCompare", Text("save_tool")
+    If LCase$(Left$(folder, 4)) = "http" Then Err.Raise vbObjectError + 906, "modCompare", "Use a local or locally synced folder."
     If Not SrcBuildWorkbook(folder & "\" & SOURCE_FOLDER_NAME & "\", source, srcCopied, srcSkipped, srcNotes) Then
-        Err.Raise vbObjectError + 904, "modCompaire", "No usable source file was found in " & folder & "\" & SOURCE_FOLDER_NAME & vbLf & srcNotes
+        Err.Raise vbObjectError + 904, "modCompare", "No usable source file was found in " & folder & "\" & SOURCE_FOLDER_NAME & vbLf & srcNotes
     End If
     openedSource = True
     sheetCount = source.Worksheets.Count
-    If sheetCount = 0 Then Err.Raise vbObjectError + 902, "modCompaire", Text("no_sheets")
+    If sheetCount = 0 Then Err.Raise vbObjectError + 902, "modCompare", Text("no_sheets")
     ReDim batches(1 To sheetCount)
     Set issues = New Collection
     Set headerIssues = New Collection
@@ -99,7 +99,7 @@ Public Sub Run_Compaire()
         End If
     Next i
     If headerIssueCount > 0 Then
-        Err.Raise vbObjectError + 903, "modCompaire", Text("bad_headers") & IssueSummary(headerIssues, headerIssueCount)
+        Err.Raise vbObjectError + 903, "modCompare", Text("bad_headers") & IssueSummary(headerIssues, headerIssueCount)
     End If
 
     For i = 1 To sheetCount
@@ -138,7 +138,7 @@ Public Sub Run_Compaire()
         ws.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True, AllowFiltering:=True
     Next ws
     outDir = folder & "\" & OutputFolderName()
-    If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 907, "modCompaire", "The output folder could not be created: " & outDir
+    If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 907, "modCompare", "The output folder could not be created: " & outDir
     outputPath = NewOutputPath(outDir)
     target.CheckCompatibility = False
     target.SaveAs Filename:=outputPath, FileFormat:=xlOpenXMLWorkbook
@@ -156,12 +156,12 @@ Finished:
     End If
     On Error GoTo 0
     If failed Then
-        MsgBox Text("failed") & vbLf & errText, vbCritical, "modCompaire"
+        MsgBox Text("failed") & vbLf & errText, vbCritical, "modCompare"
     Else
         errText = Text("done") & vbLf & outputPath & vbLf & _
                   Text("sheets") & ": " & target.Worksheets.Count & vbLf & Text("pupils") & ": " & totalPupils
         If issueCount > 0 Then errText = errText & vbLf & vbLf & Text("skipped") & IssueSummary(issues, issueCount)
-        MsgBox errText, IIf(issueCount > 0, vbExclamation, vbInformation), "modCompaire"
+        MsgBox errText, IIf(issueCount > 0, vbExclamation, vbInformation), "modCompare"
     End If
     Exit Sub
 Failed:
@@ -370,7 +370,7 @@ Private Function WriteGroup(ByVal source As Worksheet, ByVal ws As Worksheet, By
         Exit Function
     End If
     lastRow = firstRow + tableRows - 1
-    If lastRow > ws.Rows.Count Then Err.Raise vbObjectError + 905, "modCompaire", Text("too_many_rows") & " " & ws.Name
+    If lastRow > ws.Rows.Count Then Err.Raise vbObjectError + 905, "modCompare", Text("too_many_rows") & " " & ws.Name
     Set area = ws.Range(ws.Cells(titleRow + 1, 1), ws.Cells(lastRow, 8))
     area.Font.Name = "Dubai": area.Font.Size = 14: area.Font.Bold = False
     area.HorizontalAlignment = xlCenter: area.VerticalAlignment = xlCenter
@@ -718,7 +718,7 @@ End Sub
 ' ==============================================================================
 ' Name of the output folder created next to the tool workbook (hex code points)
 Private Function OutputFolderName() As String
-    OutputFolderName = AR("062A 062D 0644 064A 0644 0020 0646 062A 0627 0626 062C 0020 0627 0644 0641 0635 0644 0020 0627 0644 062B 0627 0646 064A")
+    OutputFolderName = AR("0645 0639 0627 0644 062C 0629 0020 0628 064A 0627 0646 0627 062A 0020 0627 0644 0641 0635 0644 0020 0030 0032")
 End Function
 
 ' ==============================================================================
