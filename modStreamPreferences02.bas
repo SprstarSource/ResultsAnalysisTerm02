@@ -6,7 +6,9 @@ Private m_silent As Boolean
 Private m_lastReport As String
 
 ' ============================================================
-' Preferences 02: Tecno -> Data O:P; Litr -> Data01 K:L, in Term02Guidance.xlsx
+' Preferences 02: Tecno -> Data O:P; Litr -> Data01 K:L, in the guidance workbook that
+' modTransfer02 keeps in memory (never opened from disk, never saved here on success).
+' If this step cannot complete, a copy of the workbook is saved in the output folder.
 ' Strict 1-to-1 Matching Rules:
 ' 1. Exact 1-to-1 match with empty wish cell(s):
 '    -> Process CONTINUES, data is transferred, and empty wishes are reported.
@@ -60,7 +62,7 @@ End Function
 Public Sub Run_StreamPreferences02()
     Dim stateSaved As Boolean, wasSilent As Boolean
     Dim scienceTouched As Boolean, artsTouched As Boolean
-    Dim wbW As Workbook, wbDst As Workbook, wOpened As Boolean, dOpened As Boolean
+    Dim wbW As Workbook, wbDst As Workbook, wOpened As Boolean, copyPath As String
     Dim science As WishesBatch, arts As WishesBatch
     Dim stopIssues As Object, emptyNotes As Object
     Dim ws As Worksheet, lo As ListObject, failed As Boolean, errText As String, msg As String
@@ -78,9 +80,9 @@ Public Sub Run_StreamPreferences02()
     Application.DisplayAlerts = False
     Application.EnableEvents = False
 
+    Set wbDst = modTransfer02.GuidanceWorkbook()
+    If wbDst Is Nothing Then Err.Raise vbObjectError + 85, , "No guidance workbook is open. Run the data transfer first (Term 02 Orientation button)."
     Set wbW = OpenWb(WISH_FILE, True, wOpened)
-    Set wbDst = OpenWb(DST_FILE, False, dOpened)
-    If wbDst.ReadOnly Then Err.Raise vbObjectError + 2, , DST_FILE & " is open read-only."
 
     Set stopIssues = CreateObject("Scripting.Dictionary")
     Set emptyNotes = CreateObject("Scripting.Dictionary")
@@ -118,16 +120,15 @@ Public Sub Run_StreamPreferences02()
     WriteWishes wbDst, science
     WriteWishes wbDst, arts
 
-    If science.Matched + arts.Matched > 0 Then wbDst.Save
     m_runSucceeded = True
+    ' Run on its own (not part of the orientation sequence): keep a copy so the work is not lost
+    If Not wasSilent Then msg = msg & vbLf & vbLf & "Saved to: " & modTransfer02.SaveGuidanceCopy()
     m_lastReport = msg
 
 Done:
     On Error Resume Next
     If wOpened And Not wbW Is Nothing Then wbW.Close SaveChanges:=False
-    If failed And dOpened And Not wbDst Is Nothing Then
-        wbDst.Close SaveChanges:=False
-    ElseIf failed And Not wbDst Is Nothing Then
+    If failed And Not wbDst Is Nothing Then
         For Each ws In wbDst.Worksheets
             If (ws.Name = "Data" And scienceTouched) Or (ws.Name = "Data01" And artsTouched) Then
                 Set lo = Nothing
@@ -135,6 +136,10 @@ Done:
                 If Not lo Is Nothing Then LockAndProtect ws, lo.DataBodyRange
             End If
         Next ws
+        ' The step did not complete: keep what was transferred so far as a saved copy
+        copyPath = ""
+        copyPath = modTransfer02.SaveGuidanceCopy()
+        If Len(copyPath) > 0 Then errText = errText & vbLf & vbLf & "A copy of the guidance workbook (without the wishes) was saved: " & copyPath
     End If
     If stateSaved Then
         Application.EnableEvents = True
@@ -164,9 +169,6 @@ EH:
         errText = "Execution was canceled by the user."
     Else
         errText = Err.Description
-    End If
-    If (scienceTouched Or artsTouched) And Not dOpened Then
-        errText = errText & vbLf & vbLf & ArtsText("failure_unsaved")
     End If
     Resume Done
 End Sub
