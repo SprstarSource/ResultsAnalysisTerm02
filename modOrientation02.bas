@@ -2,9 +2,13 @@ Attribute VB_Name = "modOrientation02"
 Option Explicit
 
 Private m_runSucceeded As Boolean
+Private m_silent As Boolean
+Private m_lastReport As String
 
 ' ============================================================
-' Orientation 02: science (Data) and arts (Data01) in Term02Guidance.xlsx
+' Orientation 02: science (Data) and arts (Data01) of the guidance workbook kept in memory by
+' modTransfer02. It is saved (output folder next to the tool) only after both tracks succeed;
+' if the step fails, a copy of the current state is saved instead.
 ' Original21/15-column tables and two wishes per track; builds one live general report.
 ' Run order: Run_Transfer02 -> Run_StreamPreferences02 -> Run_Orientation02
 ' Science section column N is ignored; arts has no section column.
@@ -66,6 +70,15 @@ Private m_sDec(1 To 4) As Long
 Private m_sMet(1 To 4) As Long
 Private m_nStud As Long, m_nPass As Long, m_nRep As Long, m_nOri As Long
 
+' ---- silent mode and report (used by modOrientationAll02) ----
+Public Sub SetSilentMode(ByVal silent As Boolean)
+    m_silent = silent
+End Sub
+
+Public Function LastReport() As String
+    LastReport = m_lastReport
+End Function
+
 ' One public entry point runs both tracks and saves only after both succeed.
 Public Sub Run_Orientation02()
     Dim wb As Workbook, opened As Boolean, ws As Worksheet, lo As ListObject
@@ -73,7 +86,10 @@ Public Sub Run_Orientation02()
     Dim failed As Boolean, stateSaved As Boolean, errText As String, msg As String
     Dim scienceTouched As Boolean, artsTouched As Boolean
     Dim v As Variant, scienceSheet As Worksheet, artsSheet As Worksheet
+    Dim wasSilent As Boolean, savedPath As String, copyPath As String
+    wasSilent = m_silent
     m_runSucceeded = False
+    m_lastReport = ""
     On Error GoTo EH
     oldScreen = Application.ScreenUpdating
     oldAlerts = Application.DisplayAlerts
@@ -83,8 +99,7 @@ Public Sub Run_Orientation02()
     Application.DisplayAlerts = False
     Application.EnableEvents = False
     InitText
-    Set wb = OpenWb(DST_FILE, False, opened)
-    If wb.ReadOnly Then Err.Raise vbObjectError + 2, , DST_FILE & " is open read-only."
+    Set wb = OpenGuidance(opened)
 
     ' Missing destinations are skipped; present, wholly empty tables are valid.
     Set scienceSheet = FindWorksheet(wb, "Data")
@@ -118,7 +133,13 @@ Public Sub Run_Orientation02()
     If Not artsSheet Is Nothing Then msg = msg & vbLf & vbLf & OrientArts(wb) Else msg = msg & vbLf & "Data01: missing destination; skipped."
     BuildGeneralReport wb
     Application.Calculation = xlCalculationAutomatic
-    wb.Save
+    If opened Then
+        wb.Save
+        savedPath = wb.FullName
+    Else
+        savedPath = modTransfer02.SaveGuidanceCopy()
+    End If
+    msg = msg & vbLf & vbLf & "Saved to: " & savedPath
     m_runSucceeded = True
 Done:
     On Error Resume Next
@@ -132,22 +153,30 @@ Done:
                 If Not lo Is Nothing Then LockAndProtect ws, lo.DataBodyRange
             End If
         Next ws
+        ' The step did not complete: keep the current state as a saved copy
+        copyPath = ""
+        copyPath = modTransfer02.SaveGuidanceCopy()
+        If Len(copyPath) > 0 Then errText = errText & vbLf & vbLf & "A copy of the guidance workbook (orientation incomplete) was saved: " & copyPath
     End If
     If stateSaved Then
         Application.EnableEvents = oldEvents
         Application.DisplayAlerts = oldAlerts
         Application.ScreenUpdating = oldScreen
     End If
+    m_silent = False
     On Error GoTo 0
-    If failed Then MsgBox "Orientation failed:" & vbLf & errText, vbCritical, "Orientation 02" Else MsgBox msg, vbInformation, "Orientation 02"
+    If failed Then
+        m_lastReport = "Orientation failed:" & vbLf & errText
+        If Not wasSilent Then MsgBox m_lastReport, vbCritical, "Orientation 02"
+    Else
+        m_lastReport = msg
+        If Not wasSilent Then MsgBox msg, vbInformation, "Orientation 02"
+    End If
     Exit Sub
 EH:
     m_runSucceeded = False
     failed = True
     errText = Err.Description
-    If (scienceTouched Or artsTouched) And Not opened Then
-        errText = errText & vbLf & vbLf & ArtsText("failure_unsaved")
-    End If
     Resume Done
 End Sub
 
@@ -935,13 +964,10 @@ Private Function L(ByVal key As String) As String
     End Select
 End Function
 
-Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
-    Dim wb As Workbook, fullPath As String
+Private Function OpenWb(ByVal fullPath As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
+    Dim wb As Workbook, fileName As String
     opened = False
-    If Len(ThisWorkbook.Path) = 0 Then
-        Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
-    End If
-    fullPath = ThisWorkbook.Path & Application.PathSeparator & fileName
+    fileName = Mid$(fullPath, InStrRev(fullPath, Application.PathSeparator) + 1)
     For Each wb In Application.Workbooks
         If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
             Set OpenWb = wb
@@ -954,6 +980,27 @@ Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, B
     If Dir(fullPath) = "" Then Err.Raise vbObjectError + 1, , "File not found: " & fullPath
     Set OpenWb = Workbooks.Open(Filename:=fullPath, UpdateLinks:=0, ReadOnly:=asReadOnly)
     opened = True
+End Function
+
+' Output folder next to the tool workbook (hex code points)
+Private Function OutputFolderName() As String
+    OutputFolderName = Txt("645 639 627 644 62C 629 20 628 64A 627 646 627 62A 20 627 644 641 635 644 20 30 32")
+End Function
+
+' The guidance workbook kept in memory by modTransfer02; when there is none (module run on its own),
+' Term02Guidance.xlsx of the output folder is opened instead.
+Private Function OpenGuidance(ByRef opened As Boolean) As Workbook
+    Dim wb As Workbook, p As String
+    opened = False
+    Set wb = modTransfer02.GuidanceWorkbook()
+    If Not wb Is Nothing Then
+        Set OpenGuidance = wb
+        Exit Function
+    End If
+    If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
+    p = ThisWorkbook.Path & Application.PathSeparator & OutputFolderName() & Application.PathSeparator & DST_FILE
+    If Dir(p) = "" Then Err.Raise vbObjectError + 84, , "No guidance workbook is open and " & DST_FILE & " was not found in the output folder. Run the data transfer first (Term 02 Orientation button)."
+    Set OpenGuidance = OpenWb(p, False, opened)
 End Function
 
 ' Normalizes Arabic text: alef/yaa/taa-marbuta variants, tatweel, NBSP, Arabic-Indic digits, extra spaces
@@ -1595,8 +1642,7 @@ Public Sub RefreshReports02()
     Application.DisplayAlerts = False
     Application.EnableEvents = False
     InitText
-    Set wb = OpenWb(DST_FILE, False, opened)
-    If wb.ReadOnly Then Err.Raise vbObjectError + 2, , DST_FILE & " is open read-only."
+    Set wb = OpenGuidance(opened)
     ' Validate the layout of every available track before making any changes.
     For Each nm In Array("Data", "Data01")
         Set ws = FindWorksheet(wb, CStr(nm))
@@ -1619,7 +1665,7 @@ Public Sub RefreshReports02()
     Next nm
     BuildGeneralReport wb
     Application.Calculation = xlCalculationAutomatic
-    wb.Save
+    If opened Then wb.Save Else modTransfer02.SaveGuidanceCopy
 Done:
     On Error Resume Next
     If failed And opened Then
@@ -1650,7 +1696,6 @@ Done:
 EH:
     failed = True
     errText = Err.Description
-    If touched And Not opened Then errText = errText & vbLf & vbLf & ArtsText("failure_unsaved")
     Resume Done
 End Sub
 
