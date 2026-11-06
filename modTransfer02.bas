@@ -4,15 +4,17 @@ Option Explicit
 Private m_runSucceeded As Boolean
 Private m_lastReport As String
 Private m_silent As Boolean
+Private m_guidanceWb As Workbook     ' in-memory guidance workbook shared with the next modules
+Private m_guidanceSaved As String    ' path of the saved copy ("" while never saved)
 
 ' ============================================================
-' Transfer 02: \Source02\ -> Term02Guidance.xlsx (Data science; Data01 arts)
-' Target file: inside the output folder next to the tool workbook (created when missing).
-' If the file is only found beside the tool (old location) it is copied into the folder first.
+' Transfer 02: \Source02\ -> Term02Guidance workbook (Data science; Data01 arts)
+' The guidance workbook is built from scratch (design copied from the model file) and stays
+' UNSAVED in memory: modStreamPreferences02 and modOrientation02 continue on it, and
+' SaveGuidanceCopy stores it in the output folder next to the tool workbook (created when missing).
 ' ============================================================
 
 Private Const SRC_FOLDER As String = "Source02"
-Private Const DST_FILE As String = "Term02Guidance.xlsx"
 Private Const DST_SHEET As String = "Data"
 Private Const DST_TABLE As String = "Data"
 Private Const HDR_ROW As Long = 2
@@ -82,10 +84,9 @@ End Function
 Public Sub Run_Transfer02()
     Dim oldScreen As Boolean, oldAlerts As Boolean, oldEvents As Boolean, stateSaved As Boolean
     Dim wasSilent As Boolean
-    Dim scienceTouched As Boolean, artsTouched As Boolean
-    Dim wbSrc As Workbook, wbDst As Workbook, srcOpened As Boolean, dstOpened As Boolean
+    Dim wbSrc As Workbook, wbDst As Workbook, srcOpened As Boolean
     Dim science As TransferBatch, arts As TransferBatch, problems As Object
-    Dim ws As Worksheet, lo As ListObject, failed As Boolean, errText As String
+    Dim failed As Boolean, errText As String
     Dim srcCopied As Long, srcSkipped As Long, srcList As String
 
     wasSilent = m_silent
@@ -107,44 +108,28 @@ Public Sub Run_Transfer02()
         Err.Raise vbObjectError + 4, , "No usable source file was found in " & SRC_FOLDER & "." & vbLf & srcList
     End If
     srcOpened = True
-    Set wbDst = OpenWb(ResolveDstPath(), False, dstOpened)
-    If wbDst.ReadOnly Then Err.Raise vbObjectError + 2, , DST_FILE & " is open read-only."
+    ReleaseGuidanceWorkbook
+    BuildGuidanceWorkbook wbDst
     Set problems = CreateObject("Scripting.Dictionary")
     PrepareTransfer wbSrc, wbDst, False, science, problems
     PrepareTransfer wbSrc, wbDst, True, arts, problems
     RaiseValidationIssues problems, "Header or data errors: sheet, cell/row and expected column are listed."
-    If science.SheetCount + arts.SheetCount = 0 Then Err.Raise vbObjectError + 3, , "No matching science or arts sheet found. Target left untouched."
+    If science.SheetCount + arts.SheetCount = 0 Then Err.Raise vbObjectError + 3, , "No matching science or arts sheet found."
 
-    If science.SheetCount > 0 Then Set lo = GuidanceTable(RequireWorksheet(wbDst, "Data"), 21)
-    If arts.SheetCount > 0 Then
-        artsTouched = True
-        EnsureArtsTarget wbDst
-        Set lo = GuidanceTable(RequireWorksheet(wbDst, "Data01"), 15)
-    End If
-    If science.SheetCount > 0 Then
-        scienceTouched = True
-        CheckTrackWrite wbDst, RequireWorksheet(wbDst, "Data")
-    End If
-    If arts.SheetCount > 0 Then CheckTrackWrite wbDst, RequireWorksheet(wbDst, "Data01")
-    If science.SheetCount > 0 Then WriteTransfer wbDst, science
-    If arts.SheetCount > 0 Then WriteTransfer wbDst, arts
-    wbDst.Save
+    If science.SheetCount > 0 And science.Rows > 0 Then WriteTransfer wbDst, science Else FinishEmptyTrack wbDst, False
+    If arts.SheetCount > 0 And arts.Rows > 0 Then WriteTransfer wbDst, arts Else FinishEmptyTrack wbDst, True
+    Set m_guidanceWb = wbDst
+    m_guidanceSaved = ""
     m_runSucceeded = True
     m_lastReport = TransferBatchMessage(science) & vbLf & TransferBatchMessage(arts) & science.Skipped & arts.Skipped
+    ' Run on its own (not part of the orientation sequence): keep a copy so the work is not lost
+    If Not wasSilent Then m_lastReport = m_lastReport & vbLf & "Saved to: " & SaveGuidanceCopy()
 
 Done:
     On Error Resume Next
     If srcOpened Then wbSrc.Close SaveChanges:=False
-    If failed And dstOpened Then
-        wbDst.Close SaveChanges:=False
-    ElseIf failed And Not wbDst Is Nothing Then
-        For Each ws In wbDst.Worksheets
-            If (ws.Name = "Data" And scienceTouched) Or (ws.Name = "Data01" And artsTouched) Then
-                Set lo = Nothing
-                If ws.Name = "Data01" Then Set lo = GuidanceTable(ws, 15) Else Set lo = GuidanceTable(ws, 21)
-                If Not lo Is Nothing Then LockAndProtect ws, lo.DataBodyRange
-            End If
-        Next ws
+    If failed Then
+        If Not wbDst Is Nothing Then wbDst.Close SaveChanges:=False
     End If
     If stateSaved Then
         Application.EnableEvents = oldEvents
@@ -171,9 +156,6 @@ EH:
         errText = "Operation interrupted by user."
     Else
         errText = Err.Description
-        If (scienceTouched Or artsTouched) And Not dstOpened Then
-            errText = errText & vbLf & vbLf & ArtsText("failure_unsaved")
-        End If
     End If
     Resume Done
 End Sub
@@ -295,54 +277,8 @@ Private Sub PrepareTransfer(ByVal wbSrc As Workbook, ByVal wbDst As Workbook, By
     batch.Formats = formats
 End Sub
 
-Private Sub EnsureArtsTarget(ByVal wb As Workbook)
-    Dim ws As Worksheet, anchor As Worksheet, lo As ListObject, made As Boolean, labels As Variant, c As Long, headers(1 To 1, 1 To 15) As Variant
-    Set ws = FindWorksheet(wb, "Data01")
-    Set anchor = FindWorksheet(wb, "Data")
-    If ws Is Nothing Then
-        If anchor Is Nothing Then
-            Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
-        Else
-            Set ws = wb.Worksheets.Add(After:=anchor)
-        End If
-        ws.Name = "Data01"
-        made = True
-    ElseIf Not anchor Is Nothing Then
-        If ws.Index <> anchor.Index + 1 Then ws.Move After:=anchor
-    End If
-    ws.DisplayRightToLeft = True
-    If ws.ListObjects.Count = 0 Then
-        ws.Unprotect Password:=""
-        labels = Array("number", "name", "birth", "sex", "repeat", "arabic", "history", "french", "english", "average", "wish1", "wish2", "p_lang", "p_arts", "decision")
-        For c = 1 To 15
-            headers(1, c) = ArtsText(CStr(labels(c - 1)))
-        Next c
-        ws.Range("A2:O2").Value2 = headers
-        Set lo = ws.ListObjects.Add(SourceType:=xlSrcRange, Source:=ws.Range("A2:O2"), XlListObjectHasHeaders:=xlYes)
-        lo.Name = "Data01"
-        lo.TableStyle = ""
-        If made Then
-            ws.Range("A1:O1").Merge
-            ws.Range("A1").Value2 = ArtsText("arts_title")
-            ws.Range("A1:O3").Font.Name = "Dubai"
-            ws.Range("A1:O3").Font.Size = 14
-            ws.Range("A1:O2").Font.Bold = True
-            ws.Range("A1:O3").HorizontalAlignment = xlCenter
-            ws.Range("A1:O3").VerticalAlignment = xlCenter
-            ws.Columns("A:O").ColumnWidth = 11
-            ws.Columns("B").ColumnWidth = 28
-            ws.Columns("C").ColumnWidth = 16
-            ws.Rows(1).RowHeight = 30
-            ws.Rows(2).RowHeight = 120
-            ws.Range("A2:O2").Orientation = 90
-        End If
-    Else
-        Set lo = GuidanceTable(ws, 15)
-    End If
-End Sub
-
 Private Sub WriteTransfer(ByVal wb As Workbook, ByRef batch As TransferBatch)
-    Dim ws As Worksheet, lo As ListObject, body As Range, width As Long, c As Long, formats As Variant
+    Dim ws As Worksheet, lo As ListObject, body As Range, width As Long
     If batch.SheetCount = 0 Or batch.Rows = 0 Then Exit Sub
     If batch.IsArts Then
         Set ws = wb.Worksheets("Data01"): width = 15
@@ -350,25 +286,10 @@ Private Sub WriteTransfer(ByVal wb As Workbook, ByRef batch As TransferBatch)
         Set ws = wb.Worksheets("Data"): width = 21
     End If
     Set lo = GuidanceTable(ws, width)
-    If lo.ShowAutoFilter Then
-        If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
-    End If
-    InvalidateOrientation wb, ws
-    If Not lo.DataBodyRange Is Nothing Then lo.DataBodyRange.Resize(, width).ClearContents
     lo.Resize ws.Range(ws.Cells(2, 1), ws.Cells(2 + batch.Rows, lo.ListColumns.Count))
-    If batch.Rows > 0 Then
-        Set body = lo.DataBodyRange
-        body.Resize(, width).Value2 = batch.Data
-        If batch.IsArts Then
-            body.Resize(, width).Font.Name = "Dubai"
-            body.Resize(, width).Font.Size = 14
-            body.Resize(, width).RowHeight = 20
-        End If
-        formats = batch.Formats
-        For c = 1 To width
-            body.Columns(c).NumberFormat = CStr(formats(c))
-        Next c
-    End If
+    Set body = lo.DataBodyRange
+    body.Resize(, width).Value2 = batch.Data
+    FormatGuidanceBody ws, batch.IsArts, 2 + batch.Rows
     LockAndProtect ws, body
 End Sub
 
@@ -402,7 +323,428 @@ Private Function Rnd2(ByVal x As Double) As Double
 End Function
 
 ' ==============================================================================
-' OUTPUT FOLDER + TARGET FILE PATH
+' IN-MEMORY GUIDANCE WORKBOOK
+' Built from scratch by Run_Transfer02 (sheets Data and Data01, design copied from the
+' model file). It stays UNSAVED in memory while modStreamPreferences02 and modOrientation02
+' work on it; SaveGuidanceCopy stores it in the output folder next to the tool workbook.
+' ==============================================================================
+
+' The workbook built by the last successful Run_Transfer02 (Nothing when none is open)
+Public Function GuidanceWorkbook() As Workbook
+    Dim nm As String
+    If m_guidanceWb Is Nothing Then Exit Function
+    On Error Resume Next
+    nm = m_guidanceWb.Name
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set m_guidanceWb = Nothing
+        m_guidanceSaved = ""
+    End If
+    On Error GoTo 0
+    Set GuidanceWorkbook = m_guidanceWb
+End Function
+
+' Full path of the saved copy ("" while the workbook has never been saved)
+Public Function GuidanceSavedPath() As String
+    GuidanceSavedPath = m_guidanceSaved
+End Function
+
+' Saves the in-memory workbook as Term02Guidance[_NN].xlsx inside the output folder
+' (folder created when missing; an existing file is never replaced). A second call
+' in the same run simply saves the same file again.
+Public Function SaveGuidanceCopy() As String
+    Dim wb As Workbook, outDir As String, p As String
+    Set wb = GuidanceWorkbook()
+    If wb Is Nothing Then Err.Raise vbObjectError + 20, , "No guidance workbook is open. Run the data transfer first."
+    If Len(m_guidanceSaved) = 0 Then
+        If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
+        outDir = ThisWorkbook.Path & Application.PathSeparator & OutputFolderName()
+        If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 21, , "The output folder could not be created: " & outDir
+        p = NextGuidancePath(outDir)
+        wb.SaveAs Filename:=p, FileFormat:=xlOpenXMLWorkbook
+        m_guidanceSaved = p
+    Else
+        wb.Save
+    End If
+    SaveGuidanceCopy = m_guidanceSaved
+End Function
+
+Private Sub ReleaseGuidanceWorkbook()
+    Dim wb As Workbook
+    Set wb = GuidanceWorkbook()
+    If wb Is Nothing Then Exit Sub
+    On Error Resume Next
+    wb.Close SaveChanges:=False
+    Err.Clear
+    Set m_guidanceWb = Nothing
+    m_guidanceSaved = ""
+    On Error GoTo 0
+End Sub
+
+Private Function NextGuidancePath(ByVal folderPath As String) As String
+    Dim cand As String, seq As Long
+    If Right$(folderPath, 1) <> Application.PathSeparator Then folderPath = folderPath & Application.PathSeparator
+    cand = "Term02Guidance.xlsx"
+    Do While FileExistsPath(folderPath & cand) Or WorkbookNameOpen(cand)
+        seq = seq + 1
+        cand = "Term02Guidance_" & Format$(seq, "00") & ".xlsx"
+    Loop
+    NextGuidancePath = folderPath & cand
+End Function
+
+Private Function WorkbookNameOpen(ByVal fileName As String) As Boolean
+    Dim wb As Workbook
+    For Each wb In Application.Workbooks
+        If StrComp(wb.Name, fileName, vbTextCompare) = 0 Then
+            WorkbookNameOpen = True
+            Exit Function
+        End If
+    Next wb
+End Function
+
+' ==============================================================================
+' BUILDER (layout, fonts, colors, widths and print setup copied from the model file)
+' ==============================================================================
+Private Sub BuildGuidanceWorkbook(ByRef wb As Workbook)
+    Dim wsS As Worksheet, wsA As Worksheet
+    Set wb = Workbooks.Add(xlWBATWorksheet)
+    On Error Resume Next
+    With wb.Styles("Normal").Font
+        .Name = "Calibri Light"
+        .Size = 14
+    End With
+    Err.Clear
+    On Error GoTo 0
+    Set wsS = wb.Worksheets(1)
+    wsS.Name = "Data"
+    Set wsA = wb.Worksheets.Add(After:=wsS)
+    wsA.Name = "Data01"
+    BuildGuidanceSheet wsS, False
+    BuildGuidanceSheet wsA, True
+    On Error Resume Next
+    wsS.Activate
+    wsS.Range("A1").Select
+    On Error GoTo 0
+End Sub
+
+Private Function GFont(ByVal wanted As String, ByVal fallback As String) As String
+    Static cache As Object          ' the font check is slow: ask once per font
+    If cache Is Nothing Then Set cache = CreateObject("Scripting.Dictionary")
+    If Not cache.Exists(wanted) Then
+        If FontExists(wanted) Then cache(wanted) = wanted Else cache(wanted) = fallback
+    End If
+    GFont = CStr(cache(wanted))
+End Function
+
+Private Function GuidanceHeaders(ByVal isArts As Boolean) As Variant
+    Dim h() As String
+    If isArts Then
+        ReDim h(0 To 14)
+        h(0) = Txt("627 644 631 642 645")
+        h(1) = Txt("627 644 644 642 628 20 648 20 627 644 627 633 645")
+        h(2) = Txt("62A 627 631 64A 62E 20 627 644 645 64A 644 627 62F")
+        h(3) = Txt("627 644 62C 646 633")
+        h(4) = Txt("627 644 625 639 627 62F 629")
+        h(5) = Txt("627 644 644 63A 629 20 627 644 639 631 628 64A 629 20 648 622 62F 627 628 647 627")
+        h(6) = Txt("627 644 62A 627 631 64A 62E 20 648 627 644 62C 63A 631 627 641 64A 627")
+        h(7) = Txt("627 644 644 63A 629 20 627 644 641 631 646 633 64A 629")
+        h(8) = Txt("627 644 644 63A 629 20 627 644 627 646 62C 644 64A 632 64A 629")
+        h(9) = Txt("645 639 62F 644 20 627 644 641 635 644 20 32")
+        h(10) = Txt("627 644 631 63A 628 629 20 30 31")
+        h(11) = Txt("627 644 631 63A 628 629 20 30 32")
+        h(12) = Txt("645 644 645 62D 20 644 63A 627 62A 20 623 62C 646 628 64A 629")
+        h(13) = Txt("645 644 645 62D 20 622 62F 627 628 20 648 641 644 633 641 629")
+        h(14) = Txt("627 642 62A 631 627 62D 20 645 633 62A 634 627 631 20 627 644 62A 648 62C 64A 647")
+    Else
+        ReDim h(0 To 20)
+        h(0) = Txt("627 644 631 642 645")
+        h(1) = Txt("627 644 644 642 628 20 648 627 644 627 633 645")
+        h(2) = Txt("62A 627 631 64A 62E 20 627 644 645 64A 644 627 62F")
+        h(3) = Txt("627 644 62C 646 633")
+        h(4) = Txt("627 644 625 639 627 62F 629")
+        h(5) = Txt("627 644 644 63A 629 20 627 644 639 631 628 64A 629 20 648 622 62F 627 628 647 627")
+        h(6) = Txt("627 644 631 64A 627 636 64A 627 62A")
+        h(7) = Txt("627 644 639 644 648 645 20 627 644 641 64A 632 64A 627 626 64A 629")
+        h(8) = Txt("627 644 639 644 648 645 20 627 644 637 628 64A 639 629 20 648 627 644 62D 64A 627 629")
+        h(9) = Txt("627 644 62A 627 631 64A 62E 20 648 627 644 62C 63A 631 627 641 64A 627")
+        h(10) = Txt("627 644 645 639 644 648 645 627 62A 64A 629")
+        h(11) = Txt("62A 643 646 648 644 648 62C 64A 627")
+        h(12) = Txt("645 639 62F 644 20 627 644 641 635 644 20 32")
+        h(13) = Txt("627 644 642 633 645")
+        h(14) = Txt("627 644 631 63A 628 629 20 30 31")
+        h(15) = Txt("627 644 631 63A 628 629 20 30 32")
+        h(16) = Txt("645 644 645 62D 20 631 64A 627 636 64A 627 62A")
+        h(17) = Txt("645 644 645 62D 20 62A 642 646 64A 20 631 64A 627 636 64A")
+        h(18) = Txt("645 644 645 62D 20 639 644 648 645 20 62A 62C 631 64A 628 64A 629")
+        h(19) = Txt("645 644 645 62D 20 62A 633 64A 64A 631 20 648 627 642 62A 635 627 62F")
+        h(20) = Txt("627 642 62A 631 627 62D 20 627 644 62A 648 62C 64A 647 20 627 644 645 633 628 642")
+    End If
+    GuidanceHeaders = h
+End Function
+
+Private Function GuidanceTitle(ByVal isArts As Boolean) As String
+    If isArts Then
+        GuidanceTitle = ArtsText("arts_title")
+    Else
+        GuidanceTitle = Txt("645 62D 636 631 20 627 644 62A 648 62C 64A 647 20 627 644 62A 62F 631 64A 62C 64A 20 62D 633 628 20 646 62A 627 626 62C 20 627 644 641 635 644 20 627 644 62B 627 646 64A 20 644 644 633 646 629 20 627 644 623 648 644 649 20 62C 630 639 20 645 634 62A 631 643 20 639 644 648 645 20 648 62A 643 646 648 644 648 62C 64A 627")
+    End If
+End Function
+
+' Formats a block: font, alignment, wrap, rotation, number format, lock, fill (fillRGB < 0 = none), thin borders
+Private Sub FmtBlock(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long, ByVal c1 As Long, ByVal c2 As Long, _
+                     ByVal fnt As String, ByVal isBold As Boolean, ByVal wrapIt As Boolean, ByVal orient As Long, _
+                     ByVal nf As String, ByVal isLocked As Boolean, ByVal fillRGB As Long)
+    With ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c2))
+        .Font.Name = fnt
+        .Font.Size = 14
+        .Font.Bold = isBold
+        .Font.Color = RGB(0, 0, 0)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = wrapIt
+        .Orientation = orient
+        If Len(nf) > 0 Then .NumberFormat = nf
+        .Locked = isLocked
+        If fillRGB >= 0 Then
+            .Interior.Color = fillRGB
+        Else
+            .Interior.Pattern = xlNone
+        End If
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Private Sub BuildGuidanceSheet(ByVal ws As Worksheet, ByVal isArts As Boolean)
+    Dim nc As Long, hdr As Variant, c As Long, lo As ListObject
+    Dim arial As String, white As Long, f As String
+    If isArts Then nc = 15 Else nc = 21
+    white = RGB(255, 255, 255)
+    arial = "Arial"
+    hdr = GuidanceHeaders(isArts)
+    ws.DisplayRightToLeft = True
+
+    ' ---- table: header row 2 + one empty body row (resized by WriteTransfer) ----
+    For c = 1 To nc
+        ws.Cells(2, c).Value2 = hdr(c - 1)
+    Next c
+    Set lo = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(2, 1), ws.Cells(3, nc)), , xlYes)
+    If isArts Then lo.Name = "Data01" Else lo.Name = "Data"
+    lo.TableStyle = ""
+
+    ' ---- title (row 1, merged over the table width) ----
+    ws.Cells(1, 1).Value2 = GuidanceTitle(isArts)
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, nc))
+        .Merge
+        .Font.Name = GFont("bader_al merkaz", arial)
+        .Font.Size = 18
+        .Font.Bold = True
+        .Font.Color = RGB(0, 0, 0)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' ---- header formatting per column group ----
+    If isArts Then
+        FmtBlock ws, 2, 2, 1, 3, arial, True, False, 0, "", True, white
+        FmtBlock ws, 2, 2, 4, 5, arial, True, False, 90, "", True, white
+        FmtBlock ws, 2, 2, 6, 15, arial, True, True, 90, "", True, white
+        ws.Rows(1).RowHeight = 36
+        ws.Rows(2).RowHeight = 105.6
+        ws.Columns(1).ColumnWidth = 5.1
+        ws.Columns(2).ColumnWidth = 18.5
+        ws.Columns(3).ColumnWidth = 10.9
+        ws.Range("D:E").ColumnWidth = 4.6
+        ws.Range("F:H").ColumnWidth = 5.8
+        ws.Columns(9).ColumnWidth = 8.2
+        ws.Columns(10).ColumnWidth = 7.7
+        ws.Range("K:L").ColumnWidth = 10
+        ws.Range("M:N").ColumnWidth = 9.3
+        ws.Columns(15).ColumnWidth = 10
+    Else
+        f = GFont("Basha 8C", arial)
+        FmtBlock ws, 2, 2, 1, 3, arial, True, False, 0, "", True, white
+        FmtBlock ws, 2, 2, 4, 14, arial, True, True, 90, "", True, white
+        FmtBlock ws, 2, 2, 15, 16, f, False, False, 90, "", True, white
+        FmtBlock ws, 2, 2, 17, 21, f, False, True, 90, "", True, white
+        ws.Rows(1).RowHeight = 26.4
+        ws.Rows(2).RowHeight = 102
+        ws.Columns(1).ColumnWidth = 5.1
+        ws.Columns(2).ColumnWidth = 19.8
+        ws.Columns(3).ColumnWidth = 11.7
+        ws.Range("D:E").ColumnWidth = 6.6
+        ws.Columns(6).ColumnWidth = 6
+        ws.Range("G:H").ColumnWidth = 6.4
+        ws.Range("I:N").ColumnWidth = 5.8
+        ws.Range("O:P").ColumnWidth = 9.8
+        ws.Range("Q:T").ColumnWidth = 6.6
+        ws.Columns(21).ColumnWidth = 12.4
+        BuildSideBlock ws, CStr(hdr(12))
+    End If
+
+    FormatGuidanceBody ws, isArts, 3
+    GuidancePageSetup ws, isArts
+
+    On Error Resume Next
+    ws.Activate
+    ActiveWindow.DisplayGridlines = isArts
+    If isArts Then ActiveWindow.Zoom = 90
+    On Error GoTo 0
+End Sub
+
+' Body formatting for rows 3..lastRow (called again after the table is resized)
+Private Sub FormatGuidanceBody(ByVal ws As Worksheet, ByVal isArts As Boolean, ByVal lastRow As Long)
+    Dim f As String, w As Long, r As Long
+    w = RGB(255, 255, 255)
+    If lastRow < 3 Then lastRow = 3
+    If isArts Then
+        f = GFont("Dubai", "Arial")
+        FmtBlock ws, 3, lastRow, 1, 1, f, False, False, 0, "General", True, w
+        FmtBlock ws, 3, lastRow, 2, 2, f, False, False, 0, "@", True, w
+        FmtBlock ws, 3, lastRow, 3, 3, f, False, False, 0, "yyyy\-mm\-dd", True, w
+        FmtBlock ws, 3, lastRow, 4, 5, f, False, False, 0, "@", True, w
+        FmtBlock ws, 3, lastRow, 6, 7, f, False, False, 0, "0.00", True, w
+        FmtBlock ws, 3, lastRow, 8, 8, f, False, False, 0, "0.00", True, RGB(180, 198, 231)
+        FmtBlock ws, 3, lastRow, 9, 9, f, False, False, 0, "0.00", True, RGB(248, 203, 173)
+        FmtBlock ws, 3, lastRow, 10, 10, f, False, False, 0, "0.00", True, RGB(198, 224, 180)
+        FmtBlock ws, 3, lastRow, 11, 12, f, False, False, 0, "General", False, w
+        FmtBlock ws, 3, lastRow, 13, 13, f, False, False, 0, "00.00", True, RGB(198, 224, 180)
+        FmtBlock ws, 3, lastRow, 14, 14, f, False, False, 0, "00.00", True, RGB(219, 219, 219)
+        FmtBlock ws, 3, lastRow, 15, 15, f, False, False, 0, "General", False, w
+        ws.Rows(3 & ":" & lastRow).RowHeight = 19.95
+        AddEmptyWishFormat ws.Range(ws.Cells(3, 11), ws.Cells(lastRow, 12))
+        AddEmptyWishFormat ws.Range(ws.Cells(3, 15), ws.Cells(lastRow, 15))
+    Else
+        f = "Arial"
+        FmtBlock ws, 3, lastRow, 1, 1, f, False, False, 0, "General", True, -1
+        FmtBlock ws, 3, lastRow, 2, 2, f, False, False, 0, "@", True, -1
+        FmtBlock ws, 3, lastRow, 3, 3, f, False, False, 0, "yyyy\-mm\-dd", True, -1
+        FmtBlock ws, 3, lastRow, 4, 5, f, False, False, 0, "@", True, -1
+        FmtBlock ws, 3, lastRow, 6, 13, f, False, False, 0, "0.00", True, -1
+        FmtBlock ws, 3, lastRow, 14, 14, f, False, False, 0, "00", True, -1
+        FmtBlock ws, 3, lastRow, 15, 16, GFont("Basha 8C", "Arial"), False, False, 0, "General", False, -1
+        FmtBlock ws, 3, lastRow, 17, 20, f, False, False, 0, "00.00", True, -1
+        FmtBlock ws, 3, lastRow, 21, 21, "Calibri", False, False, 0, "General", False, -1
+        ws.Rows(3 & ":" & lastRow).RowHeight = 23.4
+        AddEmptyWishFormat ws.Range(ws.Cells(3, 15), ws.Cells(lastRow, 16))
+        AddEmptyWishFormat ws.Range(ws.Cells(3, 21), ws.Cells(lastRow, 21))
+    End If
+End Sub
+
+' Cells that read "empty wish" are highlighted (bold red on yellow), as in the model file
+Private Sub AddEmptyWishFormat(ByVal rng As Range)
+    Dim fc As Object
+    rng.FormatConditions.Delete
+    Set fc = rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""" & Txt("641 627 631 63A 629") & """")
+    fc.Font.Bold = True
+    fc.Font.Color = RGB(255, 0, 0)
+    fc.Interior.Color = RGB(255, 255, 0)
+End Sub
+
+' Side block of the science sheet (W2:Y9): seat shares per branch from the number of passing pupils
+Private Sub BuildSideBlock(ByVal ws As Worksheet, ByVal avgHeader As String)
+    Dim fnt As String, names As Variant, lo As Variant, hi As Variant, fills As Variant, i As Long, r As Long
+    fnt = "Calibri Light"
+    ws.Columns(22).ColumnWidth = 6.2
+    ws.Columns(23).ColumnWidth = 13.3
+    ws.Columns(24).ColumnWidth = 8.6
+    ws.Columns(25).ColumnWidth = 9.1
+
+    ws.Range("W2").Value2 = Txt("627 644 62A 640 62D 640 62C 64A 640 645 20 641 64A 20 627 644 62A 640 648 62C 640 64A 640 640 640 647")
+    With ws.Range("W2:Y2")
+        .Merge
+        .Font.Name = fnt: .Font.Size = 22: .Font.Bold = True: .Font.Color = RGB(255, 0, 0)
+        .Interior.Color = RGB(255, 255, 0)
+        .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+    End With
+
+    ws.Range("W3").Value2 = Txt("62C 20 645 20 639 644 648 645 20 648 62A 643 646 648 644 648 62C 64A 627")
+    With ws.Range("W3:Y3")
+        .Merge
+        .Font.Name = fnt: .Font.Size = 20: .Font.Bold = True: .Font.Color = RGB(0, 0, 0)
+        .Interior.Color = RGB(0, 255, 255)
+        .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Weight = xlThin
+    End With
+
+    ws.Range("W4").Value2 = Txt("627 644 646 627 62C 62D 64A 646")
+    ws.Range("X4").Formula = "=COUNTIF(Data[" & avgHeader & "],"">=10"")"
+    ws.Range("X4:Y4").Merge
+    With ws.Range("W4:Y4")
+        .Font.Name = fnt: .Font.Size = 16: .Font.Bold = True
+        .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous: .Borders.Weight = xlThin
+    End With
+
+    ws.Range("X5").Value2 = Txt("639 644 649 20 627 644 623 642 644")
+    ws.Range("Y5").Value2 = Txt("639 644 649 20 627 644 623 643 62B 631")
+    With ws.Range("W5:Y5")
+        .Font.Name = fnt: .Font.Size = 14: .Font.Bold = True
+        .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous: .Borders.Weight = xlThin
+    End With
+
+    names = Array(Txt("631 64A 627 636 64A 627 62A"), Txt("639 644 648 645 20 62A 62C 631 64A 628 64A 629"), Txt("62A 642 646 64A 20 631 64A 627 636 64A"), Txt("62A 633 64A 64A 631 20 648 627 642 62A 635 627 62F"))
+    lo = Array(8, 50, 18, 16)
+    hi = Array(11, 55, 22, 20)
+    fills = Array(RGB(255, 255, 0), RGB(0, 255, 255), RGB(189, 215, 238), RGB(255, 230, 153))
+    For i = 0 To 3
+        r = 6 + i
+        ws.Cells(r, 23).Value2 = names(i)
+        ws.Cells(r, 24).Formula = "=(" & lo(i) & "*X4)/100"
+        ws.Cells(r, 25).Formula = "=" & hi(i) & "*X4/100"
+        With ws.Range(ws.Cells(r, 23), ws.Cells(r, 25))
+            .Font.Name = fnt: .Font.Size = 18: .Font.Bold = True
+            .Interior.Color = fills(i)
+            .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous: .Borders.Weight = xlThin
+        End With
+        ws.Range(ws.Cells(r, 24), ws.Cells(r, 25)).NumberFormat = "0"
+    Next i
+End Sub
+
+Private Sub GuidancePageSetup(ByVal ws As Worksheet, ByVal isArts As Boolean)
+    On Error Resume Next
+    With ws.PageSetup
+        .PaperSize = xlPaperA4
+        If isArts Then
+            .Orientation = xlPortrait
+        Else
+            .Orientation = xlLandscape
+            .LeftMargin = Application.InchesToPoints(0.315)
+            .RightMargin = Application.InchesToPoints(0.315)
+            .TopMargin = Application.InchesToPoints(0.551)
+            .BottomMargin = Application.InchesToPoints(0.157)
+            .HeaderMargin = Application.InchesToPoints(0.315)
+            .FooterMargin = Application.InchesToPoints(0.315)
+            .CenterHorizontally = True
+            .Zoom = False
+            .FitToPagesWide = 1
+            .FitToPagesTall = False
+        End If
+    End With
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+' Formats and protects a sheet that received no pupils (empty track)
+Private Sub FinishEmptyTrack(ByVal wb As Workbook, ByVal isArts As Boolean)
+    Dim ws As Worksheet, lo As ListObject
+    If isArts Then
+        Set ws = wb.Worksheets("Data01")
+        Set lo = GuidanceTable(ws, 15)
+    Else
+        Set ws = wb.Worksheets("Data")
+        Set lo = GuidanceTable(ws, 21)
+    End If
+    FormatGuidanceBody ws, isArts, 3
+    LockAndProtect ws, lo.DataBodyRange
+End Sub
+
+
+' ==============================================================================
+' OUTPUT FOLDER
 ' ==============================================================================
 ' Name of the output folder next to the tool workbook (hex code points)
 Private Function OutputFolderName() As String
@@ -424,45 +766,6 @@ Private Function EnsureFolder(ByVal p As String) As Boolean
         On Error GoTo 0
     End If
     EnsureFolder = FolderExistsPath(p)
-End Function
-
-' Full path of Term02Guidance.xlsx inside the output folder (folder created when missing).
-' A copy found beside the tool (old location) is copied into the folder; the original is untouched.
-Private Function ResolveDstPath() As String
-    Dim outDir As String, dstPath As String, oldPath As String, copyErr As Long
-    If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
-    outDir = ThisWorkbook.Path & Application.PathSeparator & OutputFolderName()
-    If Not EnsureFolder(outDir) Then Err.Raise vbObjectError + 5, , "The output folder could not be created: " & outDir
-    dstPath = outDir & Application.PathSeparator & DST_FILE
-    If Not FileExistsPath(dstPath) Then
-        oldPath = ThisWorkbook.Path & Application.PathSeparator & DST_FILE
-        If Not FileExistsPath(oldPath) Then Err.Raise vbObjectError + 1, , "File not found: " & dstPath
-        On Error Resume Next
-        FileCopy oldPath, dstPath
-        copyErr = Err.Number
-        Err.Clear
-        On Error GoTo 0
-        If copyErr <> 0 Then Err.Raise vbObjectError + 6, , "Could not copy " & oldPath & " into the output folder (close it in Excel and retry)."
-    End If
-    ResolveDstPath = dstPath
-End Function
-
-Private Function OpenWb(ByVal fullPath As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
-    Dim wb As Workbook, fileName As String
-    opened = False
-    fileName = Mid$(fullPath, InStrRev(fullPath, Application.PathSeparator) + 1)
-    For Each wb In Application.Workbooks
-        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
-            Set OpenWb = wb
-            Exit Function
-        End If
-        If StrComp(wb.Name, fileName, vbTextCompare) = 0 Then
-            Err.Raise vbObjectError + 1, , "A different file with the same name is open: " & wb.FullName
-        End If
-    Next wb
-    If Not FileExistsPath(fullPath) Then Err.Raise vbObjectError + 1, , "File not found: " & fullPath
-    Set OpenWb = Workbooks.Open(Filename:=fullPath, UpdateLinks:=0, ReadOnly:=asReadOnly)
-    opened = True
 End Function
 
 Private Function TitlePrefix() As String
