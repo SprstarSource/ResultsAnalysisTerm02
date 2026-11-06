@@ -4,12 +4,13 @@ Option Explicit
 ' ============================================================================
 ' Module: modOrientationResults02
 ' Purpose:
-'   Export the final guidance results from Term02Guidance.xlsx to a separate
-'   workbook inside folder "تحليل نتائج الفصل الثاني" with sequential naming:
+'   Export the final guidance results from the guidance workbook (the one kept in memory by
+'   modTransfer02; Term02Guidance.xlsx of the output folder when none is open) to a separate
+'   workbook inside folder "معالجة بيانات الفصل 02" with sequential naming:
 '   OrientationResults02.xlsx, OrientationResults02_01.xlsx, OrientationResults02_02.xlsx, ...
 '
 ' Output:
-'   - Saved inside subfolder "تحليل نتائج الفصل الثاني".
+'   - Saved inside subfolder "معالجة بيانات الفصل 02" (created when missing).
 '   - Never overwrites existing files; creates sequential _01, _02 names.
 '   - Sheet "Litr": all arts students from Data01.
 '   - One sheet per science section from Data, named Tecno1, Tecno2, ...
@@ -28,8 +29,8 @@ Private Const SOURCE_FILE As String = "Term02Guidance.xlsx"
 Private Const OUTPUT_BASE_NAME As String = "OrientationResults02"
 Private Const OUTPUT_EXT As String = ".xlsx"
 
-' Folder name: "تحليل نتائج الفصل الثاني" stored as hex code points
-Private Const OUTPUT_FOLDER_CODES As String = "62A 62D 644 64A 644 20 646 62A 627 626 62C 20 627 644 641 635 644 20 627 644 62B 627 646 64A"
+' Folder name: "معالجة بيانات الفصل 02" stored as hex code points
+Private Const OUTPUT_FOLDER_CODES As String = "645 639 627 644 62C 629 20 628 64A 627 646 627 62A 20 627 644 641 635 644 20 30 32"
 
 Private Const SCIENCE_SHEET As String = "Data"
 Private Const ARTS_SHEET As String = "Data01"
@@ -127,7 +128,7 @@ Public Sub Run_OrientationResults02()
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
 
-    Set wbSource = OpenSourceWorkbook(SOURCE_FILE, sourceOpened)
+    Set wbSource = OpenGuidanceSource(sourceOpened)
 
     Set wsScience = FindSheet(wbSource, SCIENCE_SHEET)
     Set wsArts = FindSheet(wbSource, ARTS_SHEET)
@@ -664,14 +665,28 @@ End Sub
 ' ---------------------------------------------------------------------------
 ' Workbook and table helpers
 ' ---------------------------------------------------------------------------
-Private Function OpenSourceWorkbook(ByVal fileName As String, _
+' The guidance workbook kept in memory by modTransfer02; when there is none (module run on its own),
+' Term02Guidance.xlsx of the output folder is opened read-only instead.
+Private Function OpenGuidanceSource(ByRef openedHere As Boolean) As Workbook
+    Dim wb As Workbook, p As String
+    openedHere = False
+    Set wb = modTransfer02.GuidanceWorkbook()
+    If Not wb Is Nothing Then
+        Set OpenGuidanceSource = wb
+        Exit Function
+    End If
+    p = ThisWorkbook.Path & Application.PathSeparator & OutputFolderName() & Application.PathSeparator & SOURCE_FILE
+    Set OpenGuidanceSource = OpenSourceWorkbook(p, openedHere)
+End Function
+
+Private Function OpenSourceWorkbook(ByVal fullPath As String, _
                                     ByRef openedHere As Boolean) As Workbook
 
     Dim wb As Workbook
-    Dim fullPath As String
+    Dim fileName As String
 
     openedHere = False
-    fullPath = ThisWorkbook.Path & Application.PathSeparator & fileName
+    fileName = Mid$(fullPath, InStrRev(fullPath, Application.PathSeparator) + 1)
 
     For Each wb In Application.Workbooks
         If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
@@ -686,7 +701,8 @@ Private Function OpenSourceWorkbook(ByVal fileName As String, _
     Next wb
 
     If Len(Dir$(fullPath)) = 0 Then
-        Err.Raise vbObjectError + 1011, , "Source file not found: " & fullPath
+        Err.Raise vbObjectError + 1011, , "Source file not found: " & fullPath & _
+                  ". Run the data transfer first (Term 02 Orientation button)."
     End If
 
     Set OpenSourceWorkbook = Workbooks.Open( _
