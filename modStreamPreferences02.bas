@@ -12,14 +12,18 @@ Private m_lastReport As String
 ' Strict 1-to-1 Matching Rules:
 ' 1. Exact 1-to-1 match with empty wish cell(s):
 '    -> Process CONTINUES, data is transferred, and empty wishes are reported.
-' 2. No match (unmatched row in StreamPreferences02.xlsx OR unmatched pupil in Term02Guidance.xlsx)
-'    OR Multi-row match (duplicate/ambiguous rows in StreamPreferences02.xlsx OR in Term02Guidance.xlsx)
+' 2. No match (unmatched row in the wishes file OR unmatched pupil in the guidance workbook)
+'    OR Multi-row match (duplicate/ambiguous rows in the wishes file OR in the guidance workbook)
 '    OR invalid birth dates / repeated non-empty wishes:
 '    -> Process STOPS (Preferences02Succeeded = False), target is not modified,
 '       and all mismatches/duplicates are announced in the report.
 ' ============================================================
 
-Private Const WISH_FILE As String = "StreamPreferences02.xlsx"
+' The wishes file is found INSIDE Source02 by its STRUCTURE, never by its name:
+' sheets Tecno and/or Litr, headers in row 2, B name / C birth date / D wish 1 / E wish 2.
+Private Const SRC_FOLDER As String = "Source02"
+Private Const WISH_SHEET_SCIENCE As String = "Tecno"
+Private Const WISH_SHEET_ARTS As String = "Litr"
 Private Const W_FIRST_ROW As Long = 3     ' headers in row 2
 Private Const W_COL_NAME As Long = 2      ' B
 Private Const W_COL_BIRTH As Long = 3     ' C
@@ -66,7 +70,7 @@ Public Sub Run_StreamPreferences02()
     Dim science As WishesBatch, arts As WishesBatch
     Dim stopIssues As Object, emptyNotes As Object
     Dim ws As Worksheet, lo As ListObject, failed As Boolean, errText As String, msg As String
-    Dim hasStop As Boolean
+    Dim hasStop As Boolean, problem As String, wishPath As String
 
     wasSilent = m_silent
     m_runSucceeded = False
@@ -82,7 +86,9 @@ Public Sub Run_StreamPreferences02()
 
     Set wbDst = modTransfer02.GuidanceWorkbook()
     If wbDst Is Nothing Then Err.Raise vbObjectError + 85, , "No guidance workbook is open. Run the data transfer first (Term 02 Orientation button)."
-    Set wbW = OpenWb(WISH_FILE, True, wOpened)
+    problem = FindWishesFile(wishPath)
+    If Len(problem) > 0 Then Err.Raise vbObjectError + 83, , problem
+    Set wbW = OpenWb(wishPath, True, wOpened)
 
     Set stopIssues = CreateObject("Scripting.Dictionary")
     Set emptyNotes = CreateObject("Scripting.Dictionary")
@@ -91,12 +97,12 @@ Public Sub Run_StreamPreferences02()
     PrepareWishes wbW, wbDst, True, arts, stopIssues, emptyNotes
 
     If Not science.TrackActive And Not arts.TrackActive Then
-        Err.Raise vbObjectError + 84, , "No active student records found to match between " & WISH_FILE & " and " & DST_FILE & "."
+        Err.Raise vbObjectError + 84, , "No active student records found to match between the wishes file and the guidance workbook."
     End If
 
     hasStop = science.HasFatalStop Or arts.HasFatalStop Or (stopIssues.Count > 0)
 
-    msg = science.Message & vbLf & arts.Message
+    msg = "Wishes file: " & Mid$(wishPath, InStrRev(wishPath, Application.PathSeparator) + 1) & vbLf & science.Message & vbLf & arts.Message
     If emptyNotes.Count > 0 Then
         msg = AppendDetailsList(emptyNotes, msg, "Matched rows with empty wishes (work continues): " & emptyNotes.Count)
     End If
@@ -191,9 +197,9 @@ Private Sub PrepareWishes(ByVal wbW As Workbook, ByVal wbDst As Workbook, ByVal 
 
     batch.IsArts = isArts
     If isArts Then
-        sourceSheet = "Litr": targetSheet = "Data01": wishColumn = 11: width = 15
+        sourceSheet = WISH_SHEET_ARTS: targetSheet = "Data01": wishColumn = 11: width = 15
     Else
-        sourceSheet = "Tecno": targetSheet = "Data": wishColumn = 15: width = 21
+        sourceSheet = WISH_SHEET_SCIENCE: targetSheet = "Data": wishColumn = 15: width = 21
     End If
 
     Set wsW = FindWorksheet(wbW, sourceSheet)
@@ -327,7 +333,7 @@ Private Sub PrepareWishes(ByVal wbW As Workbook, ByVal wbDst As Workbook, ByVal 
         End If
     Next i
 
-    ' ---------- 2. Validate ALL source records (StreamPreferences02.xlsx) ----------
+    ' ---------- 2. Validate ALL source records (the wishes file) ----------
     ReDim sourceNames(1 To nSource)
     ReDim sourceDates(1 To nSource)
     ReDim sourceOKRows(1 To nSource)
@@ -665,13 +671,10 @@ Private Function L(ByVal key As String) As String
     End Select
 End Function
 
-Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
-    Dim wb As Workbook, fullPath As String
+Private Function OpenWb(ByVal fullPath As String, ByVal asReadOnly As Boolean, ByRef opened As Boolean) As Workbook
+    Dim wb As Workbook, fileName As String
     opened = False
-    If Len(ThisWorkbook.Path) = 0 Then
-        Err.Raise vbObjectError + 1, , "Save the tool workbook before running this procedure."
-    End If
-    fullPath = ThisWorkbook.Path & Application.PathSeparator & fileName
+    fileName = Mid$(fullPath, InStrRev(fullPath, Application.PathSeparator) + 1)
     For Each wb In Application.Workbooks
         If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
             Set OpenWb = wb
@@ -684,6 +687,135 @@ Private Function OpenWb(ByVal fileName As String, ByVal asReadOnly As Boolean, B
     If Dir(fullPath) = "" Then Err.Raise vbObjectError + 1, , "File not found: " & fullPath
     Set OpenWb = Workbooks.Open(Filename:=fullPath, UpdateLinks:=0, ReadOnly:=asReadOnly)
     opened = True
+End Function
+
+' ==============================================================================
+' WISHES FILE DISCOVERY (by structure, never by name)
+' ==============================================================================
+' Returns "" and sets fullPath when exactly ONE file in Source02 has the wishes
+' structure; otherwise returns the text to show (none found / several found).
+Public Function FindWishesFile(ByRef fullPath As String) As String
+    Dim folder As String, f As String, ext As String, names As Collection, i As Long
+    Dim wb As Workbook, opened As Boolean, state As Long
+    Dim hits As String, near As String, nHits As Long, firstHit As String
+
+    fullPath = ""
+    If Len(ThisWorkbook.Path) = 0 Then
+        FindWishesFile = "Save the tool workbook before running this procedure."
+        Exit Function
+    End If
+    folder = ThisWorkbook.Path & Application.PathSeparator & SRC_FOLDER & Application.PathSeparator
+    If Not WishFolderExists(folder) Then
+        FindWishesFile = "The folder '" & SRC_FOLDER & "' was not found next to the tool:" & vbLf & folder
+        Exit Function
+    End If
+
+    Set names = New Collection
+    f = Dir(folder & "*.xls*")
+    Do While f <> ""
+        If Left$(f, 2) <> "~$" Then
+            ext = LCase$(Mid$(f, InStrRev(f, ".") + 1))
+            If ext = "xlsx" Or ext = "xlsm" Or ext = "xls" Or ext = "xlsb" Then names.Add f
+        End If
+        f = Dir
+    Loop
+
+    For i = 1 To names.Count
+        f = CStr(names(i))
+        If StrComp(folder & f, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+            Set wb = WishOpenForInspection(folder & f, opened)
+            If Not wb Is Nothing Then
+                state = WishesLayoutState(wb)
+                If state = 2 Then
+                    nHits = nHits + 1
+                    hits = hits & vbLf & "  - " & f
+                    If nHits = 1 Then firstHit = folder & f
+                ElseIf state = 1 Then
+                    near = near & vbLf & "  - " & f
+                End If
+                If opened Then wb.Close SaveChanges:=False
+            End If
+        End If
+    Next i
+
+    If nHits = 1 Then
+        fullPath = firstHit
+    ElseIf nHits = 0 Then
+        FindWishesFile = "No wishes file was found in '" & SRC_FOLDER & "'." & vbLf & _
+            "It is recognised by its structure (sheets " & WISH_SHEET_SCIENCE & " / " & WISH_SHEET_ARTS & _
+            ", headers in row 2: name, birth date, wish 1, wish 2), not by its name."
+        If Len(near) > 0 Then FindWishesFile = FindWishesFile & vbLf & "Files with these sheets but different headers:" & near
+    Else
+        FindWishesFile = "More than one wishes file was found in '" & SRC_FOLDER & "' - keep only one:" & hits
+    End If
+End Function
+
+' 0 = not a wishes file, 1 = has a wishes sheet but the headers do not match, 2 = wishes file
+Private Function WishesLayoutState(ByVal wb As Workbook) As Long
+    Dim ws As Worksheet, nm As Variant, found As Long, good As Long
+    For Each nm In Array(WISH_SHEET_SCIENCE, WISH_SHEET_ARTS)
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = wb.Worksheets(CStr(nm))
+        On Error GoTo 0
+        If Not ws Is Nothing Then
+            found = found + 1
+            If WishHeadersOk(ws) Then good = good + 1
+        End If
+    Next nm
+    If found = 0 Then
+        WishesLayoutState = 0
+    ElseIf good = found Then
+        WishesLayoutState = 2
+    Else
+        WishesLayoutState = 1
+    End If
+End Function
+
+' Row 2 headers: B name, C birth date, D wish 1, E wish 2
+Private Function WishHeadersOk(ByVal ws As Worksheet) As Boolean
+    WishHeadersOk = WishCellHas(ws, 2, "627 633 645") And WishCellHas(ws, 3, "645 64A 644 627 62F") _
+                And WishCellHas(ws, 4, "631 63A 628") And WishCellHas(ws, 5, "631 63A 628")
+End Function
+
+Private Function WishCellHas(ByVal ws As Worksheet, ByVal col As Long, ByVal wordCodes As String) As Boolean
+    Dim v As Variant, w As String, p As Variant
+    On Error Resume Next
+    v = ws.Cells(W_FIRST_ROW - 1, col).MergeArea.Cells(1, 1).Value2
+    On Error GoTo 0
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then Exit Function
+    For Each p In Split(wordCodes, " ")
+        If Len(p) > 0 Then w = w & ChrW(CLng("&H" & p))
+    Next p
+    WishCellHas = (Len(w) > 0 And InStr(Norm(v), Norm(w)) > 0)
+End Function
+
+Private Function WishOpenForInspection(ByVal fullPath As String, ByRef opened As Boolean) As Workbook
+    Dim wb As Workbook
+    opened = False
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
+            Set WishOpenForInspection = wb
+            Exit Function
+        End If
+    Next wb
+    On Error Resume Next
+    Set wb = Workbooks.Open(Filename:=fullPath, UpdateLinks:=0, ReadOnly:=True, AddToMRU:=False)
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set wb = Nothing
+    End If
+    On Error GoTo 0
+    If Not wb Is Nothing Then
+        opened = True
+        Set WishOpenForInspection = wb
+    End If
+End Function
+
+Private Function WishFolderExists(ByVal p As String) As Boolean
+    On Error Resume Next
+    WishFolderExists = ((GetAttr(p) And vbDirectory) <> 0)
+    If Err.Number <> 0 Then WishFolderExists = False: Err.Clear
 End Function
 
 Private Function Norm(ByVal v As Variant) As String
