@@ -1,0 +1,28 @@
+name: Run Check Engine Sync
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  check-vba-modules:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false 
+      matrix:
+        # اكتب هنا أسماء موديلاتك الخمسة بلاحقتها الأصلية (.bas)
+        vba_module: [modTransfer02.bas, modAverage02.bas, modCollector.bas, modSplitTermResults.bas, modCompare.bas]
+
+    steps:
+      - name: جلب ملفات المستودع
+        uses: actions/checkout@v4
+
+      - name: إعداد بيئة بايثون
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: تنفيذ الفحص على الموديول
+        # هذا السطر يشغل البايثون ويمرر له ملف الـ bas ليقوم بفحصه
+        run: python check_engine_sync.py ${{ matrix.vba_module }}
