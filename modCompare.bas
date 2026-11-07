@@ -161,6 +161,7 @@ Finished:
         errText = Text("done") & vbLf & outputPath & vbLf & _
                   Text("sheets") & ": " & target.Worksheets.Count & vbLf & Text("pupils") & ": " & totalPupils
         If issueCount > 0 Then errText = errText & vbLf & vbLf & Text("skipped") & IssueSummary(issues, issueCount)
+        If Len(srcNotes) > 0 Then errText = errText & vbLf & vbLf & "Source notes:" & vbLf & srcNotes
         MsgBox errText, IIf(issueCount > 0, vbExclamation, vbInformation), "modCompare"
     End If
     Exit Sub
@@ -854,6 +855,64 @@ Private Sub SetupFonts()
     If FontExists(FONT_NUMERIC) Then g_ActiveNumericFont = FONT_NUMERIC Else g_ActiveNumericFont = FONT_FALLBACK
 End Sub
 
+' ==============================================================================
+' STRUCTURE CHECK (engine). A results file has its identity headers in row
+' DATA_START_ROW: B = name, C = birth date, D = sex. A file with any other layout
+' (for example the wishes file, whose headers are in row 2) is skipped and named
+' in the report; it never stops the run and it is never recognised by its file name.
+' ==============================================================================
+Private Function SrcHasResultsLayout(ByVal ws As Worksheet) As Boolean
+    SrcHasResultsLayout = SrcHeaderHas(ws, 2, "627 633 645") _
+                      And SrcHeaderHas(ws, 3, "645 64A 644 627 62F") _
+                      And SrcHeaderHas(ws, 4, "62C 646 633")
+End Function
+
+Private Function SrcHeaderHas(ByVal ws As Worksheet, ByVal col As Long, ByVal wordCodes As String) As Boolean
+    Dim v As Variant, h As String, w As String
+    On Error Resume Next
+    v = ws.Cells(DATA_START_ROW, col).MergeArea.Cells(1, 1).Value2
+    On Error GoTo 0
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then Exit Function
+    h = SrcNormHeader(CStr(v))
+    w = SrcNormHeader(SrcWord(wordCodes))
+    SrcHeaderHas = (Len(w) > 0 And InStr(h, w) > 0)
+End Function
+
+Private Function SrcWord(ByVal codes As String) As String
+    Dim p As Variant, s As String
+    For Each p In Split(codes, " ")
+        If Len(p) > 0 Then s = s & ChrW(CLng("&H" & p))
+    Next p
+    SrcWord = s
+End Function
+
+Private Function SrcNormHeader(ByVal t As String) As String
+    t = Replace(t, ChrW(&H623), ChrW(&H627))    ' alef variants -> alef
+    t = Replace(t, ChrW(&H625), ChrW(&H627))
+    t = Replace(t, ChrW(&H622), ChrW(&H627))
+    t = Replace(t, ChrW(&H649), ChrW(&H64A))    ' alef maksura -> yaa
+    t = Replace(t, ChrW(&H629), ChrW(&H647))    ' taa marbuta -> haa
+    t = Replace(t, ChrW(&H640), "")             ' tatweel
+    t = Replace(t, ChrW(&HA0), " ")
+    t = Replace(t, ChrW(&H200E), "")
+    t = Replace(t, ChrW(&H200F), "")
+    t = Replace(t, vbTab, " ")
+    t = Replace(t, vbLf, " ")
+    t = Replace(t, vbCr, " ")
+    SrcNormHeader = LCase$(Trim$(t))
+End Function
+
+' True when the workbook has the sheets of the wishes file (only used to word the report)
+Private Function SrcHasWishSheets(ByVal wb As Workbook) As Boolean
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If StrComp(ws.Name, "Tecno", vbTextCompare) = 0 Or StrComp(ws.Name, "Litr", vbTextCompare) = 0 Then
+            SrcHasWishSheets = True
+            Exit Function
+        End If
+    Next ws
+End Function
+
 Private Function SrcProcessFile(ByRef wbResult As Workbook, _
                                         ByVal SourcePath As String, _
                                         ByVal fileName As String, _
@@ -900,6 +959,16 @@ Private Function SrcProcessFile(ByRef wbResult As Workbook, _
 
     If LastRow < DATA_START_ROW Or LastCol < 1 Then
         ReasonOut = "EMPTY_WORKBOOK (no data at row " & DATA_START_ROW & ")"
+        wbSource.Close SaveChanges:=False: Exit Function
+    End If
+
+    ' ---- Structure check: not a results layout -> skipped and named in the report
+    If Not SrcHasResultsLayout(wsSource) Then
+        If SrcHasWishSheets(wbSource) Then
+            ReasonOut = "WISHES FILE layout (sheets Tecno / Litr) - not a results file, ignored"
+        Else
+            ReasonOut = "DIFFERENT_STRUCTURE (identity headers not found in row " & DATA_START_ROW & ") - ignored"
+        End If
         wbSource.Close SaveChanges:=False: Exit Function
     End If
 
